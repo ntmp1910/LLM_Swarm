@@ -5,12 +5,14 @@ import time
 from dataclasses import asdict, dataclass
 from typing import List, Optional
 
-import aiohttp
 from datasets import Dataset, load_dataset
 from tqdm.asyncio import tqdm_asyncio
 from transformers import HfArgumentParser
 import wandb
 import yaml
+
+# Import OpenAI library
+from openai import OpenAI
 
 HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
@@ -19,21 +21,21 @@ HF_TOKEN = os.environ.get("HF_TOKEN", None)
 class GPTOSSSwarmConfig:
     """Configuration for GPT-OSS-120B API swarm"""
     model: str = "gpt-oss-120b"
-    api_base: str = "https://your-gpt-oss-120b-api-endpoint.com/v1"
-    api_key: str = os.environ.get("API_KEY", "")
+    api_base: str = "http://10.211.37.7:9021"  # Update with your server host
+    api_key: str = "EMPTY"  # API key is not needed when using base_url
     instances: int = 1
     per_instance_max_parallel_requests: int = 10
     request_timeout: int = 120
     max_retries: int = 6
     retry_delay: int = 4
+    temperature: float = 0.0 # Add temperature
+    top_p: float = 0.9 # Add top_p
+    max_tokens: int = 32000 # Add max_tokens
 
 
 @dataclass
 class Args:
     # Generation parameters
-    max_new_tokens: int = 2048
-    temperature: float = 0.7
-    top_p: float = 0.9
     top_k: int = 50
     repetition_penalty: float = 1.1
     stop_sequences: List[str] = None
@@ -61,49 +63,39 @@ class Args:
 
 
 class GPTOSSClient:
-    """Client for GPT-OSS-120B API"""
+    """Client for GPT-OSS-120B API using OpenAI library"""
     
     def __init__(self, config: GPTOSSSwarmConfig):
         self.config = config
-        self.session = None
-        self.headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json"
-        }
+        self.client = OpenAI(
+            api_key=config.api_key,
+            base_url=f"{config.api_base}/v1",
+        )
     
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.config.request_timeout)
-        )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
+        pass
     
-    async def generate_text(self, prompt: str, generation_params: dict) -> dict:
-        """Generate text using GPT-OSS-120B API"""
-        payload = {
-            "model": self.config.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": generation_params.get("max_new_tokens", 2048),
-            "temperature": generation_params.get("temperature", 0.7),
-            "top_p": generation_params.get("top_p", 0.9),
-            "stop": generation_params.get("stop_sequences", []),
-            "stream": False
-        }
-        
-        async with self.session.post(
-            f"{self.config.api_base}/chat/completions",
-            headers=self.headers,
-            json=payload
-        ) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result
-            else:
-                error_text = await response.text()
-                raise Exception(f"API error {response.status}: {error_text}")
+    async def generate_text(self, prompt: str) -> dict:
+        """Generate text using GPT-OSS-120B API with OpenAI library"""
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                seed=0,
+                top_p=self.config.top_p,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                extra_body={"reasoning": {"effort": "low"}},
+                metadata={"output_format": "reasoning_and_final"}
+            )
+            return {"choices": [{"message": {"content": response.choices[0].message.content}}]}
+        except Exception as e:
+            print(e)
+            raise e
 
 
 def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
@@ -115,7 +107,7 @@ def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
     return GPTOSSSwarmConfig()
 
 
-async def process_text(sample, client, generation_params, args, tokenizer, semaphore):
+async def process_text(sample, client, args, tokenizer, semaphore):
     """Process a single text sample"""
     token_length = 0
     attempt = 0
@@ -124,14 +116,13 @@ async def process_text(sample, client, generation_params, args, tokenizer, semap
         try:
             async with semaphore:
                 result = await client.generate_text(
-                    sample[args.prompt_column], 
-                    generation_params
+                    sample[args.prompt_column]
                 )
                 
                 completion_text = result["choices"][0]["message"]["content"]
                 
                 # Process stop sequences
-                for stop_seq in generation_params.get("stop_sequences", []):
+                for stop_seq in args.stop_sequences or []:
                     if completion_text.endswith(stop_seq):
                         completion_text = completion_text[:-len(stop_seq)].rstrip()
                 
@@ -189,14 +180,6 @@ async def main():
         print(f"Loading the first {args.max_samples} samples...")
         ds = ds.select(range(args.max_samples))
     
-    # Prepare generation parameters
-    generation_params = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "stop_sequences": args.stop_sequences or ["<|endoftext|>", "\n\n\n"]
-    }
-    
     # Create checkpoint directory
     checkpoint_dir = f"{args.checkpoint_path}/{args.repo_id.split('/')[1]}/data"
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -220,7 +203,7 @@ async def main():
             
             # Process chunk
             chunk_results = await tqdm_asyncio.gather(
-                *(process_text(sample, client, generation_params, args, None, semaphore) for sample in chunk)
+                *(process_text(sample, client, args, None, semaphore) for sample in chunk)
             )
             
             # Save checkpoint
