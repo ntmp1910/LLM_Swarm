@@ -1,0 +1,8 @@
+model: "gpt-oss-120b"
+api_base: "https://your-gpt-oss-120b-api-endpoint.com/v1"
+api_key: "${API_KEY}"  # Will be replaced with environment variable
+instances: 1
+per_instance_max_parallel_requests: 10
+request_timeout: 120
+max_retries: 6
+retry_delay: 4
