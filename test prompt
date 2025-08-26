@@ -1,0 +1,12 @@
+{
+    "id": "textbook_0_children_0",
+    "category": "CHÍNH TRỊ",
+    "section": "CHÍNH TRỊ - Phần 1",
+    "unit": "Đơn vị học tập 1",
+    "style": "textbook",
+    "prompt": "Soạn một chương trong sách giáo khoa về \"CHÍNH TRỊ\" cho children.\n\nDựa vào đoạn trích sau để lấy ý tưởn>
+    "language": "Vietnamese",
+    "audience": "children",
+    "language_level": "đơn giản",
+    "age_range": "7-12"
+  },

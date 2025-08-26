@@ -2,6 +2,7 @@ import asyncio
 import multiprocessing
 import os
 import time
+import json
 from dataclasses import asdict, dataclass
 from typing import List, Optional
 
@@ -61,6 +62,8 @@ class Args:
     # API configuration
     config_file: Optional[str] = None
 
+    json_input_path: Optional[str] = None
+    json_field: Optional[str] = None
 
 class GPTOSSClient:
     """Client for GPT-OSS-120B API using OpenAI library"""
@@ -107,12 +110,12 @@ def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
     return GPTOSSSwarmConfig()
 
 
-async def process_text(sample, client, args, tokenizer, semaphore):
+async def process_text(sample, client, args, tokenizer, semaphore, gpt_config):
     """Process a single text sample"""
     token_length = 0
     attempt = 0
     
-    while attempt < args.max_retries:
+    while attempt < gpt_config.max_retries:
         try:
             async with semaphore:
                 result = await client.generate_text(
@@ -131,21 +134,19 @@ async def process_text(sample, client, args, tokenizer, semaphore):
                 
                 sample["completion"] = completion_text
                 sample["token_length"] = token_length
-                sample["model"] = args.model
+                sample["model"] = gpt_config.model
                 return sample
 
         except Exception as e:
             attempt += 1
-            if attempt < args.max_retries:
-                print(f"Request failed, retrying in {args.retry_delay} seconds... (Attempt {attempt}/{args.max_retries})")
-                await asyncio.sleep(args.retry_delay)
+            if attempt < gpt_config.max_retries:
+                print(f"Request failed, retrying in {gpt_config.retry_delay} seconds... (Attempt {attempt}/{gpt_config.max_retries})")
+                await asyncio.sleep(gpt_config.retry_delay)
             else:
                 print(f"Max retries reached. Failed to process the request with error {str(e)}.")
                 sample["completion"] = ""
                 sample["token_length"] = 0
                 return sample
-
-
 async def main():
     """Main async function"""
     parser = HfArgumentParser((Args,))
@@ -155,19 +156,23 @@ async def main():
     gpt_config = load_config(args.config_file)
     
     # Initialize WandB
-    wandb.init(
-        project="synthetic_data_gpt_oss",
-        entity=args.wandb_username,
-        name=args.repo_id.split("/")[1],
-    )
-    wandb.config.update(asdict(args))
-    wandb.config.update(asdict(gpt_config))
+#     wandb.init(
+#         project="synthetic_data_gpt_oss",
+#         entity=args.wandb_username,
+#         name=args.repo_id.split("/")[1],
+#     )
+#     wandb.config.update(asdict(args))
+#     wandb.config.update(asdict(gpt_config))
     
     # Load prompts dataset
     num_proc = 1 if args.debug else multiprocessing.cpu_count()
-    ds = load_dataset(
-        args.prompts_dataset, token=HF_TOKEN, split="train", num_proc=num_proc
-    )
+    
+    if args.json_input_path:
+        ds = load_dataset("json", data_files= args.json_input_path,field=args.json_field, split='train',)
+    else:
+        ds = load_dataset(
+            args.prompts_dataset, token = HF_TOKEN, split='train', num_proc=num_proc
+        )
     
     if args.shuffle_dataset:
         ds = ds.shuffle(seed=args.seed)
@@ -181,7 +186,7 @@ async def main():
         ds = ds.select(range(args.max_samples))
     
     # Create checkpoint directory
-    checkpoint_dir = f"{args.checkpoint_path}/{args.repo_id.split('/')[1]}/data"
+    checkpoint_dir = f"{args.checkpoint_path}/data"
     os.makedirs(checkpoint_dir, exist_ok=True)
     print(f"Will be saving at {checkpoint_dir}")
     
@@ -203,32 +208,35 @@ async def main():
             
             # Process chunk
             chunk_results = await tqdm_asyncio.gather(
-                *(process_text(sample, client, args, None, semaphore) for sample in chunk)
+                *(process_text(sample, client, args, None, semaphore, gpt_config) for sample in chunk)
             )
             
-            # Save checkpoint
+            # Save checkpoint (UTF-8 NDJSON with unescaped Unicode)
             temp_time = time.time()
             time_per_chunk = temp_time - batch_time
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{i}.json")
             
-            intermediate_ds = Dataset.from_list(chunk_results)
-            intermediate_ds.to_json(checkpoint_path)
+            # Write as JSON Lines to preserve Unicode readability
+            with open(checkpoint_path, "w", encoding="utf-8") as f:
+                for rec in chunk_results:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             
-            batch_tokens = sum(intermediate_ds["token_length"])
+            # Compute tokens for this batch
+            batch_tokens = sum(rec.get("token_length", 0) for rec in chunk_results)
             total_tokens += batch_tokens
             saving_time += time.time() - temp_time
             
             print(f"💾 Checkpoint (samples {i}-{end_index}) saved at {checkpoint_path}.")
             
-            # Log to WandB
-            wandb.log({
-                "sample": end_index,
-                "batch": int(i / args.checkpoint_interval),
-                "total_tokens (M)": total_tokens / 1e6,
-                "tokens_per_batch": batch_tokens,
-                "time_per_batch (s)": time_per_chunk,
-                "generated_tokens_per_sec": int(batch_tokens / time_per_chunk),
-            })
+#             # Log to WandB
+#             wandb.log({
+#                 "sample": end_index,
+#                 "batch": int(i / args.checkpoint_interval),
+#                 "total_tokens (M)": total_tokens / 1e6,
+#                 "tokens_per_batch": batch_tokens,
+#                 "time_per_batch (s)": time_per_chunk,
+#                 "generated_tokens_per_sec": int(batch_tokens / time_per_chunk),
+#             })
         
         end_time = time.time()
         total_duration = end_time - start_time
@@ -239,9 +247,15 @@ async def main():
         print(f"Total duration: {total_duration // 3600}h{int((total_duration % 3600) // 60)}min")
         print(f"Saving time: {saving_time}s={saving_time/60}min")
         
-        # Load and filter final dataset
+        # Load and filter final dataset from saved NDJSON checkpoints
         print("Load checkpoints...")
-        output_ds = load_dataset(checkpoint_dir, split="train")
+        checkpoint_files = [
+            os.path.join(checkpoint_dir, name)
+            for name in os.listdir(checkpoint_dir)
+            if name.startswith("checkpoint_") and name.endswith(".json")
+        ]
+        checkpoint_files.sort()
+        output_ds = load_dataset("json", data_files=checkpoint_files, split="train")
         final_data = output_ds.filter(lambda x: x["token_length"] >= args.min_token_length)
         
         print(final_data)
