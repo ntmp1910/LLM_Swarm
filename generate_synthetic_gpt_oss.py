@@ -90,10 +90,7 @@ class GPTOSSClient:
             f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
         ])
         
-        system_message = "Bạn sẽ nhận nhiều prompt và trả lời từng cái một theo thứ tự. Mỗi câu trả lời bắt đầu bằng 'RESPONSE {số}:' và kết thúc trước prompt tiếp theo."
-        
         messages = [
-            {"role": "system", "content": system_message},
             {"role": "user", "content": combined_prompt}
         ]
         
@@ -110,30 +107,20 @@ class GPTOSSClient:
             )
             content = response.choices[0].message.content
             
-            # Parse the batched response back into individual responses
+            # Simple parsing: split by "---" and extract content between prompts
+            parts = content.split("---")
             responses = []
-            lines = content.split('\n')
-            current_response = []
-            current_prompt_num = None
             
-            for line in lines:
-                if line.startswith('RESPONSE '):
-                    if current_prompt_num is not None and current_response:
-                        responses.append('\n'.join(current_response).strip())
-                    current_prompt_num = int(line.split(':')[0].split()[1])
-                    current_response = []
-                elif line.startswith('PROMPT ') or line.startswith('---'):
-                    if current_prompt_num is not None and current_response:
-                        responses.append('\n'.join(current_response).strip())
-                        current_prompt_num = None
-                        current_response = []
+            # Extract responses from each part
+            for i, part in enumerate(parts):
+                if i == 0:  # Skip first part if it's empty
+                    continue
+                # Clean up the response text
+                response_text = part.strip()
+                if response_text:
+                    responses.append(response_text)
                 else:
-                    if current_prompt_num is not None:
-                        current_response.append(line)
-            
-            # Add the last response if exists
-            if current_prompt_num is not None and current_response:
-                responses.append('\n'.join(current_response).strip())
+                    responses.append("")
             
             # Ensure we have the right number of responses
             while len(responses) < len(prompts):
