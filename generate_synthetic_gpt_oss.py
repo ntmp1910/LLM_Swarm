@@ -32,6 +32,7 @@ class GPTOSSSwarmConfig:
     temperature: float = 0.0 # Add temperature
     top_p: float = 0.9 # Add top_p
     max_tokens: int = 32000 # Add max_tokens
+    batch_size: int = 100  # Number of prompts to send in one request
 
 
 @dataclass
@@ -65,6 +66,7 @@ class Args:
     json_input_path: Optional[str] = None
     json_field: Optional[str] = None
 
+
 class GPTOSSClient:
     """Client for GPT-OSS-120B API using OpenAI library"""
     
@@ -81,9 +83,20 @@ class GPTOSSClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
     
-    async def generate_text(self, prompt: str) -> dict:
-        """Generate text using GPT-OSS-120B API with OpenAI library"""
-        messages = [{"role": "user", "content": prompt}]
+    async def generate_text_batch(self, prompts: List[str]) -> List[dict]:
+        """Generate text using GPT-OSS-120B API with OpenAI library for multiple prompts"""
+        # Create a single request with multiple prompts
+        combined_prompt = "\n\n---\n\n".join([
+            f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
+        ])
+        
+        system_message = "Bạn sẽ nhận nhiều prompt và trả lời từng cái một theo thứ tự. Mỗi câu trả lời bắt đầu bằng 'RESPONSE {số}:' và kết thúc trước prompt tiếp theo."
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": combined_prompt}
+        ]
+        
         try:
             response = self.client.chat.completions.create(
                 model=self.config.model,
@@ -95,7 +108,38 @@ class GPTOSSClient:
                 extra_body={"reasoning": {"effort": "low"}},
                 metadata={"output_format": "reasoning_and_final"}
             )
-            return {"choices": [{"message": {"content": response.choices[0].message.content}}]}
+            content = response.choices[0].message.content
+            
+            # Parse the batched response back into individual responses
+            responses = []
+            lines = content.split('\n')
+            current_response = []
+            current_prompt_num = None
+            
+            for line in lines:
+                if line.startswith('RESPONSE '):
+                    if current_prompt_num is not None and current_response:
+                        responses.append('\n'.join(current_response).strip())
+                    current_prompt_num = int(line.split(':')[0].split()[1])
+                    current_response = []
+                elif line.startswith('PROMPT ') or line.startswith('---'):
+                    if current_prompt_num is not None and current_response:
+                        responses.append('\n'.join(current_response).strip())
+                        current_prompt_num = None
+                        current_response = []
+                else:
+                    if current_prompt_num is not None:
+                        current_response.append(line)
+            
+            # Add the last response if exists
+            if current_prompt_num is not None and current_response:
+                responses.append('\n'.join(current_response).strip())
+            
+            # Ensure we have the right number of responses
+            while len(responses) < len(prompts):
+                responses.append("")
+            
+            return [{"choices": [{"message": {"content": resp}}]} for resp in responses]
         except Exception as e:
             print(e)
             raise e
@@ -110,32 +154,43 @@ def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
     return GPTOSSSwarmConfig()
 
 
-async def process_text(sample, client, args, tokenizer, semaphore, gpt_config):
-    """Process a single text sample"""
-    token_length = 0
+async def process_batch(samples, client, args, tokenizer, semaphore, gpt_config):
+    """Process a batch of text samples"""
+    prompts = [sample[args.prompt_column] for sample in samples]
     attempt = 0
     
     while attempt < gpt_config.max_retries:
         try:
             async with semaphore:
-                result = await client.generate_text(
-                    sample[args.prompt_column]
-                )
+                results = await client.generate_text_batch(prompts)
                 
-                completion_text = result["choices"][0]["message"]["content"]
+                # Process each sample with its corresponding response
+                processed_samples = []
+                for i, (sample, result) in enumerate(zip(samples, results)):
+                    completion_text = result["choices"][0]["message"]["content"]
+                    
+                    # Process stop sequences
+                    for stop_seq in args.stop_sequences or []:
+                        if completion_text.endswith(stop_seq):
+                            completion_text = completion_text[:-len(stop_seq)].rstrip()
+                    
+                    # Estimate token length (adjust based on your tokenizer)
+                    token_length = len(completion_text.split())  # Simple approximation
+                    
+                    # Create filtered output with only specified fields
+                    filtered_sample = {
+                        "id": sample.get("id", ""),
+                        "category": sample.get("category", ""),
+                        "section": sample.get("section", ""),
+                        "unit": sample.get("unit", ""),
+                        "completion": completion_text,
+                        "token_length": token_length,
+                        "model": gpt_config.model
+                    }
+                    
+                    processed_samples.append(filtered_sample)
                 
-                # Process stop sequences
-                for stop_seq in args.stop_sequences or []:
-                    if completion_text.endswith(stop_seq):
-                        completion_text = completion_text[:-len(stop_seq)].rstrip()
-                
-                # Estimate token length (adjust based on your tokenizer)
-                token_length = len(completion_text.split())  # Simple approximation
-                
-                sample["completion"] = completion_text
-                sample["token_length"] = token_length
-                sample["model"] = gpt_config.model
-                return sample
+                return processed_samples
 
         except Exception as e:
             attempt += 1
@@ -144,9 +199,22 @@ async def process_text(sample, client, args, tokenizer, semaphore, gpt_config):
                 await asyncio.sleep(gpt_config.retry_delay)
             else:
                 print(f"Max retries reached. Failed to process the request with error {str(e)}.")
-                sample["completion"] = ""
-                sample["token_length"] = 0
-                return sample
+                # Return failed samples with minimal fields
+                failed_samples = []
+                for sample in samples:
+                    failed_sample = {
+                        "id": sample.get("id", ""),
+                        "category": sample.get("category", ""),
+                        "section": sample.get("section", ""),
+                        "unit": sample.get("unit", ""),
+                        "completion": "",
+                        "token_length": 0,
+                        "model": gpt_config.model
+                    }
+                    failed_samples.append(failed_sample)
+                return failed_samples
+
+
 async def main():
     """Main async function"""
     parser = HfArgumentParser((Args,))
@@ -206,10 +274,14 @@ async def main():
             end_index = min(i + args.checkpoint_interval, total_samples)
             chunk = ds.select(range(i, end_index))
             
-            # Process chunk
-            chunk_results = await tqdm_asyncio.gather(
-                *(process_text(sample, client, args, None, semaphore, gpt_config) for sample in chunk)
-            )
+            # Process chunk in batches
+            chunk_results = []
+            batch_size = gpt_config.batch_size
+            
+            for j in range(0, len(chunk), batch_size):
+                batch = chunk.select(range(j, min(j + batch_size, len(chunk))))
+                batch_results = await process_batch(batch, client, args, None, semaphore, gpt_config)
+                chunk_results.extend(batch_results)
             
             # Save checkpoint (UTF-8 NDJSON with unescaped Unicode)
             temp_time = time.time()
