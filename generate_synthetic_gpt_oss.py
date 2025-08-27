@@ -85,10 +85,14 @@ class GPTOSSClient:
     
     async def generate_text_batch(self, prompts: List[str]) -> List[dict]:
         """Generate text using GPT-OSS-120B API with OpenAI library for multiple prompts"""
-        # Create a single request with multiple prompts using a simple separator
-        combined_prompt = "\n\n---SEPARATOR---\n\n".join([
+        print(f"=== DEBUG: generate_text_batch called with {len(prompts)} prompts ===")
+        
+        # Create a single request with multiple prompts using simple separators
+        combined_prompt = "\n\n---\n\n".join([
             f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
         ])
+        
+        print(f"=== DEBUG: Combined prompt length: {len(combined_prompt)} ===")
         
         messages = [
             {"role": "user", "content": combined_prompt}
@@ -106,11 +110,12 @@ class GPTOSSClient:
                 metadata={"output_format": "reasoning_and_final"}
             )
             content = response.choices[0].message.content
+            print(f"=== DEBUG: Response length: {len(content)} ===")
+            print(f"=== DEBUG: Response preview: {content[:500]}... ===")
             
-            # Split by separator and extract responses
-            parts = content.split("---SEPARATOR---")
-            print(f"=== DEBUG: Response split into {len(parts)} parts ===")
-            print(f"=== DEBUG: Expected {len(prompts)} prompts ===")
+            # Simple parsing: split by "---" and extract content
+            parts = content.split("---")
+            print(f"=== DEBUG: Split into {len(parts)} parts ===")
             
             responses = []
             
@@ -137,6 +142,7 @@ class GPTOSSClient:
             
             print(f"=== DEBUG: Final responses count: {len(responses)} ===")
             return [{"choices": [{"message": {"content": resp}}]} for resp in responses]
+            
         except Exception as e:
             print(f"=== ERROR in generate_text_batch: {e} ===")
             import traceback
