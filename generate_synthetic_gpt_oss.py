@@ -85,8 +85,8 @@ class GPTOSSClient:
     
     async def generate_text_batch(self, prompts: List[str]) -> List[dict]:
         """Generate text using GPT-OSS-120B API with OpenAI library for multiple prompts"""
-        # Create a single request with multiple prompts using a stronger separator
-        combined_prompt = "\n\n=== NEXT_PROMPT ===\n\n".join([
+        # Create a single request with multiple prompts using a simple separator
+        combined_prompt = "\n\n---SEPARATOR---\n\n".join([
             f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
         ])
         
@@ -107,28 +107,40 @@ class GPTOSSClient:
             )
             content = response.choices[0].message.content
             
-            # Use stronger separator for parsing
-            parts = content.split("=== NEXT_PROMPT ===")
+            # Split by separator and extract responses
+            parts = content.split("---SEPARATOR---")
+            print(f"=== DEBUG: Response split into {len(parts)} parts ===")
+            print(f"=== DEBUG: Expected {len(prompts)} prompts ===")
+            
             responses = []
             
             # Extract responses from each part
             for i, part in enumerate(parts):
-                if i == 0:  # Skip first part if it's empty
-                    continue
                 # Clean up the response text
                 response_text = part.strip()
+                print(f"=== DEBUG: Part {i}: length {len(response_text)} ===")
+                
+                # Remove the "PROMPT X:" prefix if present
+                if response_text.startswith(f"PROMPT {i+1}:"):
+                    response_text = response_text[len(f"PROMPT {i+1}:"):].strip()
+                
                 if response_text:
                     responses.append(response_text)
                 else:
                     responses.append("")
             
+            print(f"=== DEBUG: Extracted {len(responses)} responses ===")
+            
             # Ensure we have the right number of responses
             while len(responses) < len(prompts):
                 responses.append("")
             
+            print(f"=== DEBUG: Final responses count: {len(responses)} ===")
             return [{"choices": [{"message": {"content": resp}}]} for resp in responses]
         except Exception as e:
-            print(e)
+            print(f"=== ERROR in generate_text_batch: {e} ===")
+            import traceback
+            traceback.print_exc()
             raise e
 
 
