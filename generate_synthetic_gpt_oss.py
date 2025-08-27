@@ -85,8 +85,8 @@ class GPTOSSClient:
     
     async def generate_text_batch(self, prompts: List[str]) -> List[dict]:
         """Generate text using GPT-OSS-120B API with OpenAI library for multiple prompts"""
-        # Create a single request with multiple prompts
-        combined_prompt = "\n\n---\n\n".join([
+        # Create a single request with multiple prompts using a stronger separator
+        combined_prompt = "\n\n=== NEXT_PROMPT ===\n\n".join([
             f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
         ])
         
@@ -107,8 +107,8 @@ class GPTOSSClient:
             )
             content = response.choices[0].message.content
             
-            # Simple parsing: split by "---" and extract content between prompts
-            parts = content.split("---")
+            # Use stronger separator for parsing
+            parts = content.split("=== NEXT_PROMPT ===")
             responses = []
             
             # Extract responses from each part
