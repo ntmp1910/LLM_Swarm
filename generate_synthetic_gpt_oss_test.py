@@ -29,10 +29,11 @@ class GPTOSSSwarmConfig:
     request_timeout: int = 120
     max_retries: int = 6
     retry_delay: int = 4
-    temperature: float = 0.0 # Add temperature
-    top_p: float = 0.9 # Add top_p
-    max_tokens: int = 32000 # Add max_tokens
-    batch_size: int = 100  # Number of prompts to send in one request
+    temperature: float = 0.0
+    top_p: float = 0.9
+    max_tokens: int = 32000
+    batch_size: int = 5  # Reduced batch size for better compatibility
+    use_batch_processing: bool = True  # Flag to enable/disable batch processing
 
 
 @dataclass
@@ -76,6 +77,7 @@ class GPTOSSClient:
             api_key=config.api_key,
             base_url=f"{config.api_base}/v1",
         )
+        self.use_batch = config.use_batch_processing
     
     async def __aenter__(self):
         return self
@@ -83,24 +85,39 @@ class GPTOSSClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
     
+    async def generate_text_single(self, prompt: str) -> dict:
+        """Generate text for a single prompt"""
+        try:
+            print(f"=== DEBUG: Processing single prompt ===")
+            response = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": prompt}],
+                seed=0,
+                top_p=self.config.top_p,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                extra_body={"reasoning": {"effort": "low"}},
+                metadata={"output_format": "reasoning_and_final"}
+            )
+            
+            content = response.choices[0].message.content
+            print(f"=== DEBUG: Single response length: {len(content)} ===")
+            return {"choices": [{"message": {"content": content}}]}
+            
+        except Exception as e:
+            print(f"=== ERROR in generate_text_single: {e} ===")
+            import traceback
+            traceback.print_exc()
+            raise e
+    
     async def generate_text_batch(self, prompts: List[str]) -> List[dict]:
-        """Generate text using GPT-OSS-120B API with OpenAI library for multiple prompts"""
-        print(f"=== DEBUG: generate_text_batch called with {len(prompts)} prompts ===")
-        
-        # Create a single request with multiple prompts
-        combined_prompt = "\n\n---\n\n".join([
-            f"PROMPT {i+1}:\n{prompt}" for i, prompt in enumerate(prompts)
-        ])
-        
-        print(f"=== DEBUG: Combined prompt length: {len(combined_prompt)} ===")
-        print(f"=== DEBUG: First 200 chars: {combined_prompt[:200]}... ===")
-        
-        messages = [
-            {"role": "user", "content": combined_prompt}
-        ]
+        """Generate text using true batch processing with multiple completions"""
+        print(f"=== DEBUG: Batch processing {len(prompts)} prompts ===")
         
         try:
-            print(f"=== DEBUG: About to call API ===")
+            # Create a conversation with multiple user messages for batch processing
+            messages = [{"role": "user", "content": prompt} for prompt in prompts]
+            
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
@@ -109,45 +126,51 @@ class GPTOSSClient:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
                 extra_body={"reasoning": {"effort": "low"}},
-                metadata={"output_format": "reasoning_and_final"}
+                metadata={"output_format": "reasoning_and_final"},
+                n=len(prompts)  # Request multiple completions
             )
-            print(f"=== DEBUG: API Response received ===")
             
-            content = response.choices[0].message.content
-            print(f"=== DEBUG: Response length: {len(content)} ===")
-            print(f"=== DEBUG: Response content: {content[:500]}... ===")
+            print(f"=== DEBUG: Batch response received with {len(response.choices)} choices ===")
             
-            # Simple parsing: split by "---" and extract content between prompts
-            parts = content.split("---")
-            print(f"=== DEBUG: Split into {len(parts)} parts ===")
+            # Map responses to prompts
+            results = []
+            for i, choice in enumerate(response.choices):
+                content = choice.message.content
+                print(f"=== DEBUG: Batch response {i} length: {len(content)} ===")
+                results.append({"choices": [{"message": {"content": content}}]})
             
-            responses = []
+            return results
             
-            # Extract responses from each part
-            for i, part in enumerate(parts):
-                if i == 0:  # Skip first part if it's empty
-                    continue
-                # Clean up the response text
-                response_text = part.strip()
-                print(f"=== DEBUG: Part {i}: '{response_text[:100]}...' ===")
-                if response_text:
-                    responses.append(response_text)
-                else:
-                    responses.append("")
-            
-            print(f"=== DEBUG: Extracted {len(responses)} responses ===")
-            
-            # Ensure we have the right number of responses
-            while len(responses) < len(prompts):
-                responses.append("")
-            
-            print(f"=== DEBUG: Final responses count: {len(responses)} ===")
-            return [{"choices": [{"message": {"content": resp}}]} for resp in responses]
         except Exception as e:
             print(f"=== ERROR in generate_text_batch: {e} ===")
-            import traceback
-            traceback.print_exc()
-            raise e
+            print("=== Falling back to individual requests ===")
+            # Fall back to individual requests if batch fails
+            return await self.fallback_individual_requests(prompts)
+    
+    async def fallback_individual_requests(self, prompts: List[str]) -> List[dict]:
+        """Fallback to individual requests when batch processing fails"""
+        results = []
+        for prompt in prompts:
+            try:
+                result = await self.generate_text_single(prompt)
+                results.append(result)
+            except Exception as e:
+                print(f"=== ERROR in fallback for prompt: {e} ===")
+                # Create empty result for failed prompt
+                results.append({"choices": [{"message": {"content": ""}}]})
+        return results
+    
+    async def generate_text(self, prompts: List[str]) -> List[dict]:
+        """Main generation method that chooses between batch and individual processing"""
+        if self.use_batch and len(prompts) > 1:
+            return await self.generate_text_batch(prompts)
+        else:
+            # Process individually
+            results = []
+            for prompt in prompts:
+                result = await self.generate_text_single(prompt)
+                results.append(result)
+            return results
 
 
 def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
@@ -159,36 +182,28 @@ def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
     return GPTOSSSwarmConfig()
 
 
-async def process_batch(samples, client, args, tokenizer, semaphore, gpt_config):
+async def process_batch(samples, client, args, semaphore, gpt_config):
     """Process a batch of text samples"""
-    print(f"=== DEBUG: process_batch called with {len(samples)} samples ===")
     prompts = [sample[args.prompt_column] for sample in samples]
-    print(f"=== DEBUG: First prompt: {prompts[0][:100]}... ===")
     attempt = 0
     
     while attempt < gpt_config.max_retries:
         try:
-            print(f"=== DEBUG: Attempt {attempt + 1}/{gpt_config.max_retries} ===")
-            print(f"=== DEBUG: Semaphore available: {semaphore._value} ===")
-            
             async with semaphore:
-                print(f"=== DEBUG: Acquired semaphore, calling generate_text_batch ===")
-                results = await client.generate_text_batch(prompts)
-                print(f"=== DEBUG: Got {len(results)} results from API ===")
+                results = await client.generate_text(prompts)
                 
                 # Process each sample with its corresponding response
                 processed_samples = []
                 for i, (sample, result) in enumerate(zip(samples, results)):
                     completion_text = result["choices"][0]["message"]["content"]
-                    print(f"=== DEBUG: Sample {i} completion length: {len(completion_text)} ===")
                     
                     # Process stop sequences
                     for stop_seq in args.stop_sequences or []:
                         if completion_text.endswith(stop_seq):
                             completion_text = completion_text[:-len(stop_seq)].rstrip()
                     
-                    # Estimate token length (adjust based on your tokenizer)
-                    token_length = len(completion_text.split())  # Simple approximation
+                    # Estimate token length
+                    token_length = len(completion_text.split())
                     
                     # Create filtered output with only specified fields
                     filtered_sample = {
@@ -201,17 +216,11 @@ async def process_batch(samples, client, args, tokenizer, semaphore, gpt_config)
                         "model": gpt_config.model
                     }
                     
-                    print(f"=== DEBUG: Sample {i} token_length: {token_length} ===")
                     processed_samples.append(filtered_sample)
                 
-                print(f"=== DEBUG: Returning {len(processed_samples)} processed samples ===")
                 return processed_samples
 
         except Exception as e:
-            print(f"=== ERROR in process_batch attempt {attempt + 1}: {e} ===")
-            import traceback
-            traceback.print_exc()
-            
             attempt += 1
             if attempt < gpt_config.max_retries:
                 print(f"Request failed, retrying in {gpt_config.retry_delay} seconds... (Attempt {attempt}/{gpt_config.max_retries})")
@@ -242,24 +251,13 @@ async def main():
     # Load GPT-OSS configuration
     gpt_config = load_config(args.config_file)
     
-    # Initialize WandB
-#     wandb.init(
-#         project="synthetic_data_gpt_oss",
-#         entity=args.wandb_username,
-#         name=args.repo_id.split("/")[1],
-#     )
-#     wandb.config.update(asdict(args))
-#     wandb.config.update(asdict(gpt_config))
-    
     # Load prompts dataset
     num_proc = 1 if args.debug else multiprocessing.cpu_count()
     
     if args.json_input_path:
-        ds = load_dataset("json", data_files= args.json_input_path,field=args.json_field, split='train',)
+        ds = load_dataset("json", data_files=args.json_input_path, field=args.json_field, split='train')
     else:
-        ds = load_dataset(
-            args.prompts_dataset, token = HF_TOKEN, split='train', num_proc=num_proc
-        )
+        ds = load_dataset(args.prompts_dataset, token=HF_TOKEN, split='train', num_proc=num_proc)
     
     if args.shuffle_dataset:
         ds = ds.shuffle(seed=args.seed)
@@ -276,6 +274,8 @@ async def main():
     checkpoint_dir = f"{args.checkpoint_path}/data"
     os.makedirs(checkpoint_dir, exist_ok=True)
     print(f"Will be saving at {checkpoint_dir}")
+    print(f"Using batch processing: {gpt_config.use_batch_processing}")
+    print(f"Batch size: {gpt_config.batch_size}")
     
     # Initialize GPT-OSS client
     async with GPTOSSClient(gpt_config) as client:
@@ -298,9 +298,16 @@ async def main():
             batch_size = gpt_config.batch_size
             
             for j in range(0, len(chunk), batch_size):
-                batch = chunk.select(range(j, min(j + batch_size, len(chunk))))
-                batch_results = await process_batch(batch, client, args, None, semaphore, gpt_config)
+                batch_end = min(j + batch_size, len(chunk))
+                batch = chunk.select(range(j, batch_end))
+                print(f"  Processing batch {j//batch_size + 1}/{(len(chunk) + batch_size - 1)//batch_size} with {len(batch)} samples")
+                
+                batch_results = await process_batch(batch, client, args, semaphore, gpt_config)
                 chunk_results.extend(batch_results)
+                
+                # Log progress for this batch
+                successful = sum(1 for r in batch_results if r["token_length"] > 0)
+                print(f"  ✅ Batch completed: {successful}/{len(batch)} successful generations")
             
             # Save checkpoint (UTF-8 NDJSON with unescaped Unicode)
             temp_time = time.time()
@@ -317,17 +324,9 @@ async def main():
             total_tokens += batch_tokens
             saving_time += time.time() - temp_time
             
+            successful_in_chunk = sum(1 for r in chunk_results if r["token_length"] > 0)
             print(f"💾 Checkpoint (samples {i}-{end_index}) saved at {checkpoint_path}.")
-            
-#             # Log to WandB
-#             wandb.log({
-#                 "sample": end_index,
-#                 "batch": int(i / args.checkpoint_interval),
-#                 "total_tokens (M)": total_tokens / 1e6,
-#                 "tokens_per_batch": batch_tokens,
-#                 "time_per_batch (s)": time_per_chunk,
-#                 "generated_tokens_per_sec": int(batch_tokens / time_per_chunk),
-#             })
+            print(f"📊 Chunk stats: {successful_in_chunk}/{len(chunk_results)} successful, {batch_tokens} tokens")
         
         end_time = time.time()
         total_duration = end_time - start_time
@@ -364,4 +363,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    wandb.finish()

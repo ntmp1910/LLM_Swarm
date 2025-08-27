@@ -1,0 +1,16 @@
+{"id": "textbook_0_children_0", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 1", "unit": "Đơn vị học tập 1", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_0_children_1", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 2", "unit": "Đơn vị học tập 2", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_0_highschool_0", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 1", "unit": "Đơn vị học tập 1", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_0_highschool_1", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 2", "unit": "Đơn vị học tập 2", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_0_professional_0", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 1", "unit": "Đơn vị học tập 1", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_0_professional_1", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 2", "unit": "Đơn vị học tập 2", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_children_0", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 1", "unit": "Đơn vị học tập 1", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_children_1", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 2", "unit": "Đơn vị học tập 2", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_children_2", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 3", "unit": "Đơn vị học tập 3", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_children_3", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 4", "unit": "Đơn vị học tập 4", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_children_4", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 5", "unit": "Đơn vị học tập 5", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_highschool_0", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 1", "unit": "Đơn vị học tập 1", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_highschool_1", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 2", "unit": "Đơn vị học tập 2", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_highschool_2", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 3", "unit": "Đơn vị học tập 3", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_highschool_3", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 4", "unit": "Đơn vị học tập 4", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}
+{"id": "textbook_1_highschool_4", "category": "CHÍNH TRỊ", "section": "CHÍNH TRỊ - Phần 5", "unit": "Đơn vị học tập 5", "completion": "", "token_length": 0, "model": "gpt-oss-120b"}

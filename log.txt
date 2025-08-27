@@ -1,0 +1,14 @@
+ python generate_synthetic_gpt_oss.py --json_input_path vietnamese_prompts.json  --prompt_column prompt --max_samples 100  --checkpoint_interval 100 --repo_id data --wandb_username "" --config_file config/gpt_oss_config.yaml --push_to_hub False --min_token_length 150
+Loading the first 100 samples...
+Will be saving at ./synthetic_data/dataProcessing chunk 0/1💾 Checkpoint (samples 0-100) saved at ./synthetic_data/data/checkpoint_0.json.
+Done processing and saving all chunks 🎉!
+🏎️💨 Overall Tokens per Second: 0.00
+Generated 0.00M tokens
+Total duration: 0.0h2min
+Saving time: 0.005785465240478516s=9.642442067464193e-05min
+Load checkpoints...
+Generating train split: 100 examples [00:00, 17279.71 examples/s]
+Filter: 100%|██████████████████████████████████████████████████████████████████| 100/100 [00:00<00:00, 33637.85 examples/s]Dataset({
+    features: ['id', 'category', 'section', 'unit', 'completion', 'token_length', 'model'],
+    num_rows: 0
+})
