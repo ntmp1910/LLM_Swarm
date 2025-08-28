@@ -82,30 +82,35 @@ class GPTOSSClient:
         """Generate text using specific client instance"""
         client = self.clients[client_index % len(self.clients)]
         
-        try:
-            # Sử dụng executor để chạy synchronous code trong thread riêng
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                self.executor,
-                lambda: client.chat.completions.create(
-                    model=self.config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    seed=0,
-                    top_p=self.config.top_p,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    extra_body={"reasoning": {"effort": "low"}},
-                    metadata={"output_format": "reasoning_and_final"},
-                    timeout=self.config.request_timeout
+        for attempt in range(self.config.max_retries):
+            try:
+                # Sử dụng executor để chạy synchronous code trong thread riêng
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    self.executor,
+                    lambda: client.chat.completions.create(
+                        model=self.config.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        seed=0,
+                        top_p=self.config.top_p,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        extra_body={"reasoning": {"effort": "low"}},
+                        metadata={"output_format": "reasoning_and_final"},
+                        timeout=self.config.request_timeout
+                    )
                 )
-            )
-            
-            content = response.choices[0].message.content
-            return {"choices": [{"message": {"content": content}}]}
-            
-        except Exception as e:
-            print(f"=== ERROR for prompt: {e} ===")
-            return {"choices": [{"message": {"content": ""}}]}
+                
+                content = response.choices[0].message.content
+                return {"choices": [{"message": {"content": content}}]}
+                
+            except Exception as e:
+                print(f"=== ERROR for prompt (attempt {attempt + 1}/{self.config.max_retries}): {e} ===")
+                if attempt < self.config.max_retries - 1:
+                    await asyncio.sleep(self.config.retry_delay)
+                else:
+                    print(f"=== FAILED after {self.config.max_retries} attempts ===")
+                    return {"choices": [{"message": {"content": ""}}]}
     
     async def generate_text_parallel(self, prompts: List[str]) -> List[dict]:
         """Process multiple prompts in parallel"""

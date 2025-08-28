@@ -1,0 +1,13 @@
+model: "gpt-oss-120b"
+api_base: "http://10.211.37.7:9021"
+api_key: "EMPTY"
+instances: 2  # Số client instances chạy song song
+per_instance_max_parallel_requests: 3  # Số requests song song mỗi instance
+request_timeout: 600  # Timeout 10 phút cho mỗi request
+max_retries: 3  # Số lần retry khi fail
+retry_delay: 5  # Delay 5 giây giữa các lần retry
+temperature: 0.1  # Temperature > 0 để tránh deterministic
+top_p: 0.9
+max_tokens: 32000
+batch_size: 1  # Giữ 1 vì server không hỗ trợ true batch
+use_batch_processing: false  # Tắt batch processing
