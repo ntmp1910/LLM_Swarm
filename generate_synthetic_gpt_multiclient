@@ -1,0 +1,234 @@
+import asyncio
+import multiprocessing
+import os
+import time
+import json
+import aiohttp
+from dataclasses import asdict, dataclass
+from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
+
+from datasets import Dataset, load_dataset
+from tqdm.asyncio import tqdm_asyncio
+from transformers import HfArgumentParser
+import wandb
+import yaml
+
+from openai import OpenAI
+
+HF_TOKEN = os.environ.get("HF_TOKEN", None)
+
+@dataclass
+class GPTOSSSwarmConfig:
+    model: str = "gpt-oss-120b"
+    api_base: str = "http://10.211.37.7:9021"
+    api_key: str = "EMPTY"
+    instances: int = 5  # Tăng số instances để parallel
+    per_instance_max_parallel_requests: int = 10
+    request_timeout: int = 300  # Tăng timeout
+    max_retries: int = 3
+    retry_delay: int = 2
+    temperature: float = 0.1  # Phải > 0 để có thể batch
+    top_p: float = 0.9
+    max_tokens: int = 32000
+    batch_size: int = 1  # Giữ 1 vì server không hỗ trợ true batch
+    use_batch_processing: bool = False  # Tắt batch vì server không hỗ trợ
+
+@dataclass
+class Args:
+    top_k: int = 50
+    repetition_penalty: float = 1.1
+    stop_sequences: List[str] = None
+    prompts_dataset: str = "your/prompts/dataset"
+    max_samples: int = 1000
+    start_sample: int = -1
+    end_sample: int = -1
+    seed: int = 42
+    prompt_column: str = "prompt"
+    shuffle_dataset: bool = False
+    debug: bool = False
+    repo_id: str = "your-username/synthetic_data_gpt_oss"
+    checkpoint_path: str = "./synthetic_data"
+    checkpoint_interval: int = 50  # Giảm checkpoint interval
+    wandb_username: str = "your-wandb-username"
+    min_token_length: int = 150
+    push_to_hub: bool = True
+    config_file: Optional[str] = None
+    json_input_path: Optional[str] = None
+    json_field: Optional[str] = None
+
+class GPTOSSClient:
+    def __init__(self, config: GPTOSSSwarmConfig):
+        self.config = config
+        self.clients = []
+        self.session = None
+        self.executor = ThreadPoolExecutor(max_workers=config.instances)
+    
+    async def __aenter__(self):
+        # Tạo multiple clients cho parallel processing
+        for i in range(self.config.instances):
+            client = OpenAI(
+                api_key=self.config.api_key,
+                base_url=f"{self.config.api_base}/v1",
+            )
+            self.clients.append(client)
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.executor:
+            self.executor.shutdown()
+    
+    async def generate_text_single(self, prompt: str, client_index: int) -> dict:
+        """Generate text using specific client instance"""
+        client = self.clients[client_index % len(self.clients)]
+        
+        try:
+            # Sử dụng executor để chạy synchronous code trong thread riêng
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                self.executor,
+                lambda: client.chat.completions.create(
+                    model=self.config.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    seed=0,
+                    top_p=self.config.top_p,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    extra_body={"reasoning": {"effort": "low"}},
+                    metadata={"output_format": "reasoning_and_final"},
+                    timeout=self.config.request_timeout
+                )
+            )
+            
+            content = response.choices[0].message.content
+            return {"choices": [{"message": {"content": content}}]}
+            
+        except Exception as e:
+            print(f"=== ERROR for prompt: {e} ===")
+            return {"choices": [{"message": {"content": ""}}]}
+    
+    async def generate_text_parallel(self, prompts: List[str]) -> List[dict]:
+        """Process multiple prompts in parallel"""
+        tasks = []
+        for i, prompt in enumerate(prompts):
+            task = asyncio.create_task(self.generate_text_single(prompt, i))
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Xử lý exceptions
+        final_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Task failed: {result}")
+                final_results.append({"choices": [{"message": {"content": ""}}]})
+            else:
+                final_results.append(result)
+        
+        return final_results
+
+async def process_batch_parallel(samples, client, args, gpt_config):
+    """Process batch with parallel requests"""
+    prompts = [sample[args.prompt_column] for sample in samples]
+    
+    try:
+        results = await client.generate_text_parallel(prompts)
+        
+        processed_samples = []
+        for i, (sample, result) in enumerate(zip(samples, results)):
+            completion_text = result["choices"][0]["message"]["content"]
+            
+            for stop_seq in args.stop_sequences or []:
+                if completion_text.endswith(stop_seq):
+                    completion_text = completion_text[:-len(stop_seq)].rstrip()
+            
+            token_length = len(completion_text.split())
+            
+            filtered_sample = {
+                "id": sample.get("id", ""),
+                "category": sample.get("category", ""),
+                "section": sample.get("section", ""),
+                "unit": sample.get("unit", ""),
+                "completion": completion_text,
+                "token_length": token_length,
+                "model": gpt_config.model
+            }
+            
+            processed_samples.append(filtered_sample)
+        
+        return processed_samples
+
+    except Exception as e:
+        print(f"Batch failed: {e}")
+        # Return empty results
+        return [{
+            "id": sample.get("id", ""),
+            "category": sample.get("category", ""),
+            "section": sample.get("section", ""),
+            "unit": sample.get("unit", ""),
+            "completion": "",
+            "token_length": 0,
+            "model": gpt_config.model
+        } for sample in samples]
+
+async def main():
+    parser = HfArgumentParser((Args,))
+    args = parser.parse_args_into_dataclasses()[0]
+    
+    gpt_config = load_config(args.config_file)
+    
+    # Load dataset
+    if args.json_input_path:
+        ds = load_dataset("json", data_files=args.json_input_path, field=args.json_field, split='train')
+    else:
+        ds = load_dataset(args.prompts_dataset, token=HF_TOKEN, split='train')
+    
+    if args.max_samples > 0:
+        ds = ds.select(range(args.max_samples))
+    
+    checkpoint_dir = f"{args.checkpoint_path}/data"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    async with GPTOSSClient(gpt_config) as client:
+        start_time = time.time()
+        total_tokens = 0
+        total_samples = len(ds)
+        
+        # Process all samples in parallel batches
+        all_results = []
+        batch_size = 20  # Smaller batches for better progress tracking
+        
+        for i in range(0, total_samples, batch_size):
+            batch_end = min(i + batch_size, total_samples)
+            batch = ds.select(range(i, batch_end))
+            
+            print(f"🚀 Processing batch {i//batch_size + 1}/{(total_samples + batch_size - 1)//batch_size}")
+            
+            batch_results = await process_batch_parallel(batch, client, args, gpt_config)
+            all_results.extend(batch_results)
+            
+            # Save checkpoint periodically
+            if (i + batch_size) % args.checkpoint_interval == 0 or batch_end == total_samples:
+                checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{i}.json")
+                with open(checkpoint_path, "w", encoding="utf-8") as f:
+                    for rec in all_results[-len(batch_results):]:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                
+                successful = sum(1 for r in batch_results if r["token_length"] > 0)
+                print(f"✅ Batch {i//batch_size + 1}: {successful}/{len(batch_results)} successful")
+        
+        end_time = time.time()
+        total_duration = end_time - start_time
+        
+        print(f"🎉 Completed {total_samples} samples in {total_duration:.1f}s")
+        print(f"🏎️ Average time per sample: {total_duration/total_samples:.1f}s")
+
+def load_config(config_file: Optional[str] = None) -> GPTOSSSwarmConfig:
+    if config_file and os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f)
+        return GPTOSSSwarmConfig(**config_data)
+    return GPTOSSSwarmConfig()
+
+if __name__ == "__main__":
+    asyncio.run(main())
